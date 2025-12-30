@@ -1,103 +1,68 @@
 import cv2
-import dlib
-from scipy.spatial import distance
-import time
+import streamlit as st
 
-# -------------------------------
-# Eye Aspect Ratio Function
-# -------------------------------
-def eye_aspect_ratio(eye):
-    # compute euclidean distances
-    A = distance.euclidean(eye[1], eye[5])
-    B = distance.euclidean(eye[2], eye[4])
-    C = distance.euclidean(eye[0], eye[3])
-    ear = (A + B) / (2.0 * C)
-    return ear
+# Page config
+st.set_page_config(page_title="Eye Blink Detection", layout="centered")
 
-# -------------------------------
-# Constants
-# -------------------------------
-EYE_AR_THRESH = 0.25   # Eye aspect ratio threshold
-EYE_AR_CONSEC_FRAMES = 3  # Consecutive frames for blink
+st.title("👁️ Eye Blink Detection App")
 
-# -------------------------------
-# Initialize
-# -------------------------------
-COUNTER = 0
-TOTAL = 0
-SLEEP_ALERT = False
+# Load Haar cascades
+face_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
+eye_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_eye.xml"
+)
 
-# Load face detector and predictor
-detector = dlib.get_frontal_face_detector()
-predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")  # Download from dlib model zoo
+# Variables
+blink_counter = 0
+eyes_closed_frames = 0
 
-(lStart, lEnd) = (42, 48)  # Left eye
-(rStart, rEnd) = (36, 42)  # Right eye
+# Start / Stop buttons
+start = st.button("Start Camera")
+stop = st.button("Stop Camera")
 
-# Start camera
-cap = cv2.VideoCapture(0)
+frame_placeholder = st.empty()
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+if start:
+    cap = cv2.VideoCapture(0)
 
-    # Detect faces
-    faces = detector(gray, 0)
+    while cap.isOpened():
+        if stop:
+            break
 
-    for face in faces:
-        shape = predictor(gray, face)
-        shape = [(shape.part(i).x, shape.part(i).y) for i in range(68)]
+        ret, frame = cap.read()
+        if not ret:
+            st.warning("Camera not working")
+            break
 
-        # Extract eye coordinates
-        leftEye = shape[lStart:lEnd]
-        rightEye = shape[rStart:rEnd]
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        faces = face_cascade.detectMultiScale(gray, 1.3, 5)
 
-        leftEAR = eye_aspect_ratio(leftEye)
-        rightEAR = eye_aspect_ratio(rightEye)
-        ear = (leftEAR + rightEAR) / 2.0
+        for (x, y, w, h) in faces:
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-        # Convert eyes to numpy array for drawing
-        leftEyeHull = cv2.convexHull(cv2.array(leftEye))
-        rightEyeHull = cv2.convexHull(cv2.array(rightEye))
+            roi_gray = gray[y:y + h, x:x + w]
+            roi_color = frame[y:y + h, x:x + w]
 
-        # Draw face rectangle
-        (x, y, w, h) = (face.left(), face.top(), face.width(), face.height())
-        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            eyes = eye_cascade.detectMultiScale(roi_gray, 1.1, 3)
 
-        # Draw eyes convex hull
-        cv2.polylines(frame, [leftEyeHull], True, (0, 255, 255), 1)
-        cv2.polylines(frame, [rightEyeHull], True, (0, 255, 255), 1)
+            if len(eyes) == 0:
+                eyes_status = "Closed"
+                eyes_closed_frames += 1
+            else:
+                eyes_status = "Open"
+                if eyes_closed_frames >= 2:
+                    blink_counter += 1
+                eyes_closed_frames = 0
 
-        # Blink detection
-        if ear < EYE_AR_THRESH:
-            COUNTER += 1
-        else:
-            if COUNTER >= EYE_AR_CONSEC_FRAMES:
-                TOTAL += 1
-            COUNTER = 0
+            cv2.putText(frame, f"Eyes: {eyes_status}", (x, y - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
 
-        # Sleep detection (if eyes closed > 2 sec)
-        if ear < EYE_AR_THRESH:
-            if not SLEEP_ALERT:
-                start_sleep = time.time()
-                SLEEP_ALERT = True
-            elif time.time() - start_sleep >= 2:
-                cv2.putText(frame, "SLEEP ALERT!", (50,100), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0,0,255), 3)
-        else:
-            SLEEP_ALERT = False
+        cv2.putText(frame, f"Blink Count: {blink_counter}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
 
-        # Display EAR, Blink Count
-        cv2.putText(frame, f"Blinks: {TOTAL}", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255,0,0), 2)
-        cv2.putText(frame, f"EAR: {ear:.2f}", (300,30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        frame_placeholder.image(frame, channels="RGB")
 
-    # Show frame
-    cv2.imshow("Face + Eye Detection", frame)
-
-    key = cv2.waitKey(1) & 0xFF
-    if key == 27:  # ESC to exit
-        break
-
-cap.release()
-cv2.destroyAllWindows()
+    cap.release()
